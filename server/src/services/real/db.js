@@ -73,8 +73,12 @@ export default {
 
   async setDbUserPassword(name, password) {
     const pw = password.replace(/\\/g, '\\\\').replace(/'/g, "''");
-    await mysql(['-e', `ALTER USER ${ident(name)}@'localhost' IDENTIFIED BY '${pw}'`]);
-    await mysql(['-e', `ALTER USER ${ident(name)}@'127.0.0.1' IDENTIFIED BY '${pw}'`]).catch(() => {});
+    for (const host of ['localhost', '127.0.0.1']) {
+      // self-healing: the user may not exist on this MySQL instance (e.g. the
+      // panel moved from Laragon's :3306 to its own :3307) — CREATE then ALTER
+      await mysql(['-e', `CREATE USER IF NOT EXISTS ${ident(name)}@'${host}'`]).catch(() => {});
+      await mysql(['-e', `ALTER USER ${ident(name)}@'${host}' IDENTIFIED BY '${pw}'`]);
+    }
   },
 
   async grant(dbUser, dbName) {
