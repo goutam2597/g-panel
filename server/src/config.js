@@ -32,12 +32,28 @@ export const config = {
   webPort: parseInt(process.env.GPANEL_WEB_PORT || '80', 10),
   host: process.env.GPANEL_HOST || '0.0.0.0',
 
+  // Hosting mode:
+  //  - 'local'  → standalone local server (Windows desktop/server, Linux desktop):
+  //               flat public_html/<site>/ tree, <name>.test local domains via the
+  //               hosts file, single admin, Cloudflare Tunnel for public domains.
+  //  - 'server' → multi-tenant hosting provider mode (Linux VPS): per-user homes,
+  //               BIND DNS, mail/FTP, package quotas — the cPanel-provider flow.
+  mode: process.env.GPANEL_MODE || (IS_WIN ? 'local' : 'server'),
+
   // Panel data (SQLite db, sites tree, stack binaries)
   dataDir: DATA_DIR,
   etcDir: DEV ? path.join(ROOT_DIR, '.devdata', 'etc') : IS_WIN ? path.join(ROOT_DIR, 'data', 'etc') : '/etc/gpanel',
 
   // Panel-owned service stack (nginx-for-Windows, php, cloudflared on Windows)
   stackDir: IS_WIN ? path.join(ROOT_DIR, 'stack') : null,
+
+  // Local-mode site storage: <dataDir>/public_html/<site> (the cPanel-style
+  // public_html root for the whole server, as the spec requires)
+  publicHtmlDir: path.join(DATA_DIR, 'public_html').replace(/\\/g, '/'),
+  siteDir: (site) => `${config.publicHtmlDir}/${site}`,
+  siteDocroot: (site, appType = 'php') => appType === 'laravel'
+    ? `${config.siteDir(site)}/public`
+    : `${config.siteDir(site)}`,
 
   // Isolation model: on Linux every panel user is a real unix user. On
   // Windows the sites tree is panel-owned under dataDir/home.

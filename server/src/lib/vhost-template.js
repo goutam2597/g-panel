@@ -1,8 +1,9 @@
 // nginx vhost template generator. Pure — shared by real driver, simulator and tests.
 // fastcgiTarget: Linux "unix:/run/php/gp-<user>.sock" or Windows "127.0.0.1:9100".
 
-export function buildVhost({ domain, user, type, docroot, phpVersion, forceHttps, proxyTarget, hasCert, fastcgiTarget, listenPort = 80 }) {
-  const serverName = `${domain} www.${domain}`;
+export function buildVhost({ domain, user, type, docroot, phpVersion, forceHttps, proxyTarget, hasCert, fastcgiTarget, listenPort = 80, serverNames = null }) {
+  const names = Array.isArray(serverNames) && serverNames.length ? serverNames : [domain, `www.${domain}`];
+  const serverName = names.join(' ');
   const isWin = /^[a-z]:\//i.test(docroot || '');
   const logDir = isWin ? `${docroot.replace(/\/public_html$/, '')}/logs` : `/home/${user}/logs`;
   const sock = fastcgiTarget || (isWin ? '127.0.0.1:9100' : `unix:/run/php/gp-${user}.sock`);

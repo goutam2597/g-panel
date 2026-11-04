@@ -1,8 +1,10 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { db, getSetting } from '../db/index.js';
 import { config } from '../config.js';
 import { sys } from './index.js';
 import { buildZoneFile, bumpSerial } from '../lib/zonefile.js';
+import { ensureHostsEntries, removeHostsEntries, flushDns } from '../lib/hosts.js';
 import { ensurePublicHtml, startSiteServer } from './site-server.js';
 
 export function allocateLocalPort() {
@@ -85,24 +87,45 @@ export async function deprovisionUserEnvironment(user) {
 }
 
 /**
- * Create a website: vhost + docroot + PHP pool entry.
- * DNS zone is created by the caller via createDnsZoneForDomain() after the
- * domain row exists — keeps this function idempotent on vhost-only edits.
+ * Site provisioning. In local mode the docroot follows the standalone
+ * public_html layout (public_html/<site>, Laravel → public_html/<site>/public)
+ * and the domain is registered in the hosts file. In server mode the per-user
+ * cPanel layout applies.
  */
+export function docrootFor({ user, domain: domainName, type, siteName, appType }) {
+  if (config.mode === 'local') {
+    const site = siteName || domainName.replace(/\.[a-z]+$/i, '');
+    const app = appType || type;
+    if (app === 'laravel') return `${config.siteDir(site)}/public`;
+    return config.siteDir(site);
+  }
+  return config.webPublic(user.username, domainName);
+}
+
 export async function provisionDomain({ user, domain, type, phpVersion, forceHttps, proxyTarget, localPort }) {
   await ensureLinuxUser(user);
 
-  if (type === 'php') {
+  const appType = type === 'laravel' ? 'laravel' : type;
+  const docroot = docrootFor({ user, domain, type: appType, appType });
+  fs.mkdirSync(docroot, { recursive: true });
+  fs.mkdirSync(path.join(path.dirname(docroot), 'logs'), { recursive: true });
+
+  if (appType === 'php' || appType === 'laravel') {
     const versions = await sys.php.versions();
     const target = versions.includes(phpVersion) ? phpVersion : versions[0];
     if (target) await sys.php.writePool(user.username, target, config.domainsDir(user.username));
   }
 
-  const docroot = config.webPublic(user.username, domain);
-  ensurePublicHtml(domain, docroot);
+  // local mode: register <name>.test in the hosts file so the domain resolves
+  if (config.mode === 'local') {
+    const r = await ensureHostsEntries([domain, `www.${domain}`]);
+    if (r.elevatedError) console.warn(`[gpanel] hosts: ${r.elevatedError.split('\n')[0]}`);
+    await flushDns().catch(() => {});
+  }
+
   try {
     await sys.nginx.writeVhost({
-      domain, user: user.username, type,
+      domain, user: user.username, type: appType,
       docroot,
       phpVersion, forceHttps: Boolean(forceHttps), proxyTarget: proxyTarget || null,
       hasCert: false,
@@ -114,8 +137,20 @@ export async function provisionDomain({ user, domain, type, phpVersion, forceHtt
     console.warn(`[gpanel] nginx vhost skipped for ${domain}: ${e.message}`);
   }
 
-  await ensurePublicHtmlLink(user.username, domain);
+  if (config.mode !== 'local') {
+    await ensurePublicHtmlLink(user.username, domain);
+  }
   return true;
+}
+
+/** Remove hosts entries + sites tree for a deleted local site. */
+export async function deprovisionLocalSite(domainName, docroot) {
+  const r = removeHostsEntries([domainName, `www.${domainName}`]);
+  if (r.elevatedError) console.warn(`[gpanel] hosts: ${r.elevatedError.split('\n')[0]}`);
+  await flushDns().catch(() => {});
+  try {
+    fs.rmSync(docroot, { recursive: true, force: true });
+  } catch {}
 }
 
 /**

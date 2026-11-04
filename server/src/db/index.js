@@ -149,6 +149,13 @@ export function migrate() {
     created INTEGER NOT NULL,
     expires INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS site_domains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain_id INTEGER NOT NULL REFERENCES domains(id) ON DELETE CASCADE,
+    domain TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL DEFAULT 'custom',
+    created_at INTEGER NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS db_grants (
     db_user_id INTEGER NOT NULL REFERENCES db_users(id) ON DELETE CASCADE,
     database_id INTEGER NOT NULL REFERENCES databases(id) ON DELETE CASCADE,
@@ -207,6 +214,10 @@ export function migrate() {
   addColumnIfMissing('domains', 'local_port', 'INTEGER');
   addColumnIfMissing('domains', 'tunnel_url', 'TEXT');
   addColumnIfMissing('domains', 'tunnel_status', "TEXT NOT NULL DEFAULT 'none'");
+  addColumnIfMissing('domains', 'app_type', "TEXT NOT NULL DEFAULT 'php'");
+  addColumnIfMissing('domains', 'site_name', 'TEXT');
+  addColumnIfMissing('domains', 'db_name', 'TEXT');
+  addColumnIfMissing('domains', 'db_user', 'TEXT');
 }
 
 function addColumnIfMissing(table, col, def) {

@@ -54,7 +54,7 @@ await app.register(
       'auth.js', 'dashboard.js', 'packages.js', 'users.js', 'domains.js', 'apps.js',
       'dns.js', 'mail.js', 'ftp.js', 'databases.js', 'cron.js', 'ssl.js',
       'files.js', 'ssh.js', 'backups.js', 'firewall.js', 'settings.js', 'audit.js',
-      'pma.js', 'cloudflare.js'
+      'pma.js', 'cloudflare.js', 'stack.js'
     ];
     for (const m of modules) {
       const mod = await import(`./routes/${m}`);

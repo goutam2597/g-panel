@@ -31,6 +31,19 @@ async function pingCheckWith(password) {
 
 async function mysqldBin() {
   if (client?.mysqld) return client.mysqld;
+  // 1) panel-owned MariaDB in the stack — full independence from Laragon/XAMPP
+  const stackMysqld = path.join(config.stackDir || '', 'mariadb', 'bin', process.platform === 'win32' ? 'mysqld.exe' : 'mysqld');
+  if (fs.existsSync(stackMysqld)) {
+    client = {
+      mysql: path.join(config.stackDir, 'mariadb', 'bin', process.platform === 'win32' ? 'mysql.exe' : 'mysql'),
+      dump: path.join(config.stackDir, 'mariadb', 'bin', process.platform === 'win32' ? 'mariadb-dump.exe' : 'mysqldump'),
+      mysqld: stackMysqld,
+      clientDir: path.join(config.stackDir, 'mariadb', 'bin')
+    };
+    return stackMysqld;
+  }
+  // 2) fallback: detected local MySQL/MariaDB (used only as the engine binary —
+  //    the panel still keeps its own data directory and port)
   const c = await findMysqlClient();
   if (!c) return null;
   const dir = path.dirname(c.bin);

@@ -36,8 +36,22 @@ switch (cmd) {
     }
     break;
   }
+  case 'install-stack': {
+    // one-click: download the panel-owned server stack (Windows)
+    const { ensureStack, installMariaDb } = await import('./services/real/stack.js');
+    const { ensurePanelMySQL } = await import('./services/win/mysql.js');
+    console.log('downloading + installing the panel server stack…');
+    const res = await ensureStack(['mariadb', 'nginx', 'php', 'composer']);
+    console.log(JSON.stringify(res, null, 2));
+    if (process.platform === 'win32') {
+      console.log('starting panel-owned MySQL :3307…');
+      try { await installMariaDb(); await ensurePanelMySQL(); console.log('panel MySQL ready'); }
+      catch (e) { console.log('panel MySQL: ' + e.message?.slice(0, 200)); }
+    }
+    break;
+  }
   default:
-    console.log('G-Panel CLI — commands: set-setting, get-setting, reset-admin-password, list-users');
+    console.log('G-Panel CLI — commands: set-setting, get-setting, reset-admin-password, list-users, install-stack');
 }
 
 function generate() {
