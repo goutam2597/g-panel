@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { db, getSetting } from '../db/index.js';
 import { config } from '../config.js';
 import { sys } from './index.js';
 import { buildZoneFile, bumpSerial } from '../lib/zonefile.js';
 import { ensureHostsEntries, removeHostsEntries, flushDns } from '../lib/hosts.js';
-import { ensurePublicHtml, startSiteServer } from './site-server.js';
+import { ensurePublicHtml, startSiteServer, startPhpServer, stopPhpServer, phpServerLogs } from './site-server.js';
 
 export function allocateLocalPort() {
   const used = new Set();
@@ -20,6 +21,42 @@ export function allocateLocalPort() {
 
 export async function startLocalSite(domainRow) {
   ensurePublicHtml(domainRow.domain, domainRow.docroot);
+
+  // PHP / Laravel sites: the dedicated port runs a real PHP server
+  // (`php -S` with a generated router — plain PHP and Laravel both work,
+  // pretty URLs included). Static sites keep the lightweight Node server.
+  const appType = domainRow.type === 'laravel' ? 'laravel' : domainRow.type;
+  if (appType === 'php' || appType === 'laravel') {
+    try {
+      const { findPhpCandidates } = await import('../lib/localstack.js');
+      const candidates = await findPhpCandidates();
+      if (candidates.length) {
+        // prefer a build matching the site's configured PHP version
+        let phpBin = candidates[0];
+        if (domainRow.php_version) {
+          const wanted = `PHP ${domainRow.php_version}`;
+          const checks = candidates.map((cand) => {
+            
+            return new Promise((resolve) => {
+              execFile(cand === 'php' ? 'php' : String(cand), ['-v'], { windowsHide: true }, (err, stdout) => {
+                resolve(!err && String(stdout || '').includes(wanted) ? cand : null);
+              });
+            });
+          });
+          const matches = (await Promise.all(checks)).filter(Boolean);
+          if (matches.length) {
+            phpBin = matches[0];
+          } else {
+            phpBin = candidates[candidates.length - 1]; // newest build
+          }
+        }
+        const r = await startPhpServer(domainRow.id, domainRow.docroot, domainRow.local_port, { phpBin });
+        if (r.ok) return r;
+      }
+    } catch (e) {
+      console.warn(`[gpanel] PHP server for ${domainRow.domain}: ${String(e.message || e).slice(0, 120)} — falling back to static`);
+    }
+  }
   const result = await startSiteServer(domainRow.id, domainRow.docroot, domainRow.local_port);
   return result;
 }
@@ -41,8 +78,7 @@ export async function restoreLocalSites() {
   for (const d of rows) {
     if (!d.local_port || !d.docroot) continue;
     try {
-      ensurePublicHtml(d.domain, d.docroot);
-      await startSiteServer(d.id, d.docroot, d.local_port);
+      await startLocalSite(d);
       restored++;
     } catch { /* port race — skip */ }
     if (d.tunnel_url) {
