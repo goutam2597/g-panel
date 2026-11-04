@@ -324,8 +324,8 @@ function ConnectionModal({ info, onClose, onRecheck }) {
 function AddDomainModal({ data, onClose, onDone }) {
   const toast = useToast();
   const [form, setForm] = useState({
-    domain: '', type: 'php', php_version: data.phpVersions[0] || '8.3',
-    dns_enabled: true, force_https: true, proxy_target: '', tunnel: true
+    name: '', domain: '', type: 'php', php_version: data.phpVersions[0] || '8.3',
+    dns_enabled: true, force_https: true, proxy_target: '', tunnel: true, create_db: true
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -335,7 +335,12 @@ function AddDomainModal({ data, onClose, onDone }) {
     e.preventDefault();
     setBusy(true); setError(null);
     try {
-      const res = await api.post('/domains', form);
+      const payload = { ...form };
+      // full domain typed → classic flow; site name only → local .test flow
+      if (payload.name?.includes('.')) payload.domain = payload.name;
+      if (!payload.name) delete payload.name;
+      if (!payload.create_db) delete payload.create_db;
+      const res = await api.post('/domains', payload);
       onDone(res);
     } catch (err) { setError(err.message); } finally { setBusy(false); }
   };
@@ -344,23 +349,24 @@ function AddDomainModal({ data, onClose, onDone }) {
     <Modal open title="Add domain" onClose={onClose}
       footer={<>
         <button className="btn" onClick={onClose}>Cancel</button>
-        <button className="btn primary" onClick={submit} disabled={busy || !form.domain}>{busy ? 'Provisioning…' : 'Create site'}</button>
+        <button className="btn primary" onClick={submit} disabled={busy || (!form.domain && !form.name)}>{busy ? 'Provisioning…' : 'Create site'}</button>
       </>}>
       <form onSubmit={submit}>
-        <Field label="Domain name" hint="On this PC a public_html folder, local URL and Cloudflare tunnel URL are created automatically — DNS delegation is optional.">
-          <input className="input" autoFocus placeholder="example.com" value={form.domain}
-            onChange={(e) => set('domain', e.target.value)} />
+        <Field label="Site name" hint="Domain is generated automatically (e.g. cloudmarket → cloudmarket.test), or type a full domain for a custom/real domain.">
+          <input className="input" autoFocus placeholder="cloudmarket  (or example.com)" value={form.name ?? form.domain}
+            onChange={(e) => set('name', e.target.value.toLowerCase())} />
         </Field>
         <div className="form-row">
           <Field label="Site type">
             <select className="input" value={form.type} onChange={(e) => set('type', e.target.value)}>
               <option value="php">PHP application</option>
+              <option value="laravel">Laravel application</option>
               <option value="static">Static HTML</option>
               <option value="proxy">Reverse proxy</option>
               <option value="parked">Parked (redirect later)</option>
             </select>
           </Field>
-          {form.type === 'php' && (
+          {(form.type === 'php' || form.type === 'laravel') && (
             <Field label="PHP version">
               <select className="input" value={form.php_version} onChange={(e) => set('php_version', e.target.value)}>
                 {data.phpVersions.map((v) => <option key={v} value={v}>{v}</option>)}
@@ -375,17 +381,15 @@ function AddDomainModal({ data, onClose, onDone }) {
           )}
         </div>
         <label className="checkbox-row" style={{ marginBottom: 8 }}>
-          <input type="checkbox" checked={form.dns_enabled} onChange={(e) => set('dns_enabled', e.target.checked)} />
-          <span>Host DNS zone on this server (creates A, www, MX, SPF records)</span>
+          <input type="checkbox" checked={form.create_db} onChange={(e) => set('create_db', e.target.checked)} />
+          <span>Create a MySQL database + user automatically (credentials shown after creation)</span>
         </label>
-        <label className="checkbox-row">
-          <input type="checkbox" checked={form.force_https} onChange={(e) => set('force_https', e.target.checked)} />
-          <span>Force HTTPS once a certificate is issued</span>
-        </label>
-        <label className="checkbox-row">
-          <input type="checkbox" checked={form.tunnel} onChange={(e) => set('tunnel', e.target.checked)} />
-          <span>Start a Cloudflare tunnel for this site (gives a public https URL)</span>
-        </label>
+        {form.type !== 'proxy' && form.type !== 'parked' && !form.name?.includes('.') && (
+          <label className="checkbox-row" style={{ marginBottom: 8 }}>
+            <input type="checkbox" checked={form.tunnel} onChange={(e) => set('tunnel', e.target.checked)} />
+            <span>Start a Cloudflare tunnel for this site (gives a public https URL)</span>
+          </label>
+        )}
         {error && <div className="callout warn" style={{ marginTop: 12 }}>{error}</div>}
       </form>
     </Modal>
