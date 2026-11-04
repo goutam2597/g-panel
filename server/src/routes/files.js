@@ -8,16 +8,25 @@ import { config } from '../config.js';
 
 /**
  * File manager API. Every route resolves the caller's allowed roots first:
- *  - user: /home/<username>/domains
- *  - admin (not impersonating): full filesystem (dangerous but intentional, like cPanel's root file editor)
+ *  - server mode, admin: full filesystem (like cPanel's root file editor)
+ *  - local mode (standalone install on the user's PC): ONLY the installation
+ *    directory is exposed — with public_html (the sites tree) as the main root
+ *  - server mode, hosting user: their own home/domains tree
  */
+
+function installDir() {
+  // parent of dataDir is the install root (e.g. F:\gpanel -> F:\gpanel\data)
+  return path.dirname(config.dataDir).replace(/\\/g, '/');
+}
 
 function allowedRoots(request) {
   const s = request.gpanelSession;
+  const local = config.mode === 'local';
   if (s.role === 'admin' && !s.impersonated_by) {
-    return ['/'];
+    return local ? [config.publicHtmlDir, installDir()] : ['/'];
   }
   const user = db.prepare('SELECT username FROM users WHERE id = ?').get(s.user_id);
+  if (local) return [config.publicHtmlDir];
   // the ~/public_html junction plus the domains tree itself
   return [config.domainsDir(user.username), config.publicHtmlLink(user.username)];
 }
@@ -73,12 +82,27 @@ function realDirMatch(p) {
 export default async function (app) {
   app.get('/roots', { preHandler: [app.requireAuth] }, async (request) => {
     const s = request.gpanelSession;
-    if (s.role === 'admin' && !s.impersonated_by) {
+    if (s.role === 'admin' && !s.impersonated_by && config.mode !== 'local') {
       return { roots: [{ label: 'Filesystem root', path: '/' }] };
+    }
+    const local = config.mode === 'local';
+    if (s.role === 'admin' && !s.impersonated_by) {
+      // local mode: ONLY the installation directory — public_html first
+      return {
+        roots: [
+          { label: 'public_html (websites)', path: config.publicHtmlDir },
+          { label: 'Install directory', path: installDir() }
+        ]
+      };
     }
     const user = db.prepare('SELECT username FROM users WHERE id = ?').get(s.user_id);
     const domains = db.prepare('SELECT domain FROM domains WHERE user_id = ? ORDER BY created_at').all(s.user_id);
     const roots = [];
+    if (local) {
+      // local mode: hosting users are scoped to the sites tree too
+      roots.push({ label: 'public_html (websites)', path: config.publicHtmlDir });
+      return { roots };
+    }
     // cPanel-style: ~/public_html is the main domain's document root
     // Always offer each site's own public_html — the ~/ junction only exists
     // after the first domain is created and may point at a different site.
