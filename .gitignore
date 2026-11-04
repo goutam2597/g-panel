@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.devdata/
+.winprod/
+.zcode/
+*.log
+.DS_Store

@@ -1,0 +1,18 @@
+{
+  "name": "g-panel",
+  "version": "1.0.0",
+  "description": "G-Panel — self-hosted cPanel-style web hosting control panel",
+  "private": true,
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "build": "npm run build --workspace web",
+    "test": "node --test server/test/",
+    "dev": "node server/src/index.js"
+  }
+}

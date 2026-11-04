@@ -1,0 +1,70 @@
+/* ============================================================
+   G-Panel design tokens
+   Warm paper + ink neutrals, one deep teal accent.
+   Hairlines over shadows. Density over whitespace.
+   ============================================================ */
+
+:root {
+  /* surfaces */
+  --paper: #F6F5F1;
+  --surface: #FFFFFF;
+  --surface-2: #F1F0EA;
+  --surface-3: #EAE8E1;
+
+  /* ink */
+  --ink: #1C1E21;
+  --ink-2: #4B5056;
+  --ink-3: #7C8288;
+  --ink-4: #A5AAAF;
+
+  /* hairlines */
+  --line: #E4E2DB;
+  --line-strong: #CFCDC4;
+
+  /* accent — deep teal */
+  --accent: #0E6B5A;
+  --accent-hover: #0A5344;
+  --accent-down: #083F34;
+  --accent-soft: #E2F0EB;
+  --accent-ink: #0B5849;
+  --accent-line: #BFD9D1;
+
+  /* status */
+  --ok: #22703F;      --ok-soft: #E4F0E6;      --ok-line: #C4DCC9;
+  --warn: #8F6A14;    --warn-soft: #F5EDD8;    --warn-line: #E2D3A8;
+  --danger: #A03B33;  --danger-soft: #F7E8E6;  --danger-line: #E3C4C0;
+  --info: #3D5A78;    --info-soft: #E7EDF3;    --info-line: #C8D5E2;
+
+  /* sidebar (dark ink panel) */
+  --side-bg: #1A1C1F;
+  --side-bg-hover: #24272B;
+  --side-bg-active: #262A2E;
+  --side-text: #B9BEC4;
+  --side-text-dim: #71777E;
+  --side-line: #2A2D31;
+
+  /* type */
+  --font: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Mono', Menlo, monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13.5px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+
+  /* geometry */
+  --radius: 6px;
+  --radius-sm: 4px;
+  --sidebar-w: 228px;
+  --topbar-h: 52px;
+
+  /* elevation (used sparingly: overlays only) */
+  --shadow-pop: 0 4px 10px rgba(22, 24, 27, 0.08), 0 12px 32px rgba(22, 24, 27, 0.14);
+  --shadow-modal: 0 8px 20px rgba(22, 24, 27, 0.12), 0 28px 64px rgba(22, 24, 27, 0.22);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
