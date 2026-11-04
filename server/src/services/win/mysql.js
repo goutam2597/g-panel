@@ -20,6 +20,15 @@ const errLog = () => path.join(dataDir(), 'panel-mysql.err');
 let client = null;
 let started = false;
 
+async function pingCheckWith(password) {
+  if (!client?.mysql) return false;
+  const args = ['-h', '127.0.0.1', '-P', String(MYSQL_PORT), '-uroot', '--connect-expired-password'];
+  const r = password
+    ? await runSafe(client.mysql, [...args, `-p${password}`, '-e', 'SELECT 1'])
+    : await runSafe(client.mysql, [...args, '-e', 'SELECT 1']);
+  return !r.failed;
+}
+
 async function mysqldBin() {
   if (client?.mysqld) return client.mysqld;
   const c = await findMysqlClient();
@@ -46,8 +55,13 @@ function running() {
 
 async function ping() {
   if (!client?.mysql) return false;
-  const r = await runSafe(client.mysql, ['-h', '127.0.0.1', '-P', String(MYSQL_PORT), '-uroot', `-p${MYSQL_PASS}`, '--connect-expired-password', '-e', 'SELECT 1']);
-  return !r.failed;
+  const base = ['-h', '127.0.0.1', '-P', String(MYSQL_PORT), '-uroot', '--connect-expired-password'];
+  // fresh --initialize-insecure datadirs have an EMPTY root password; normal
+  // runs have MYSQL_PASS. Either state means "server is up and manageable".
+  const withPw = await runSafe(client.mysql, [...base, `-p${MYSQL_PASS}`, '-e', 'SELECT 1']);
+  if (!withPw.failed) return true;
+  const noPw = await runSafe(client.mysql, [...base, '-e', 'SELECT 1']);
+  return !noPw.failed;
 }
 
 export async function ensurePanelMySQL() {
@@ -111,24 +125,41 @@ export async function ensurePanelMySQL() {
     await new Promise((r) => setTimeout(r, 500));
   }
 
-  // First run: set root password. Try auth with the expired temp password.
-  // Extract it from the init error log if we can.
-  let pwd = null;
-  try {
-    const log = fs.readFileSync(path.join(dataDir(), 'GoutamKS.err'), 'utf8');
-    const m = log.match(/temporary password is generated for root@localhost:\s*(\S+)/);
-    if (m) pwd = m[1].trim().replace(/\r$/, '');
-  } catch {}
-  if (pwd) {
-    await runSafe(client.mysql, [
-      '-h', '127.0.0.1', '-P', String(MYSQL_PORT), '-uroot', `-p${pwd}`,
-      '--connect-expired-password',
-      '-e', `ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_PASS}'; CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_PASS}'; GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION; FLUSH PRIVILEGES;`
-    ]);
+  // Password bootstrap. A fresh --initialize-insecure datadir has root with
+  // NO password; a --initialize datadir puts a temporary password in the
+  // error log (whose file name is hostname-based — discover it via glob).
+  // Provisioned = our password already works.
+  if (await pingCheckWith(MYSQL_PASS)) {
+    started = true;
+    return true; // already provisioned with our password
+  }
+  // try: empty password → set ours
+  const setPw = (pw) => `ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_PASS}'; CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_PASS}'; GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION; FLUSH PRIVILEGES;`;
+  let tried = await runSafe(client.mysql, [
+    '-h', '127.0.0.1', '-P', String(MYSQL_PORT), '-uroot', '--connect-expired-password',
+    '-e', setPw('')
+  ]);
+  // try: temporary password from the newest error log in the datadir
+  if (tried.failed) {
+    let tmpPwd = null;
+    try {
+      const logs = fs.readdirSync(dataDir()).filter((f) => f.endsWith('.err'));
+      for (const f of logs) {
+        const m = fs.readFileSync(path.join(dataDir(), f), 'utf8')
+          .match(/temporary password is generated for root@localhost:\s*(\S+)/);
+        if (m) { tmpPwd = m[1].trim(); break; }
+      }
+    } catch {}
+    if (tmpPwd) {
+      tried = await runSafe(client.mysql, [
+        '-h', '127.0.0.1', '-P', String(MYSQL_PORT), '-uroot', `-p${tmpPwd}`,
+        '--connect-expired-password', '-e', setPw(tmpPwd)
+      ]);
+    }
   }
   // Verify now with the real password
   for (let i = 0; i < 40; i++) {
-    if (await ping()) break;
+    if (await pingCheckWith(MYSQL_PASS)) break;
     await new Promise((r) => setTimeout(r, 500));
   }
   if (!(await ping())) {
