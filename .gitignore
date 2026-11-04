@@ -8,3 +8,4 @@ dist/
 
 # panel-owned stack (binaries + data)
 stack/
+*.out
