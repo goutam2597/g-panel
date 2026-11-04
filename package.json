@@ -14,5 +14,9 @@
     "build": "npm run build --workspace web",
     "test": "node --test server/test/",
     "dev": "node server/src/index.js"
+  },
+  "allowScripts": {
+    "esbuild@0.21.5": true,
+    "ssh2@1.17.0": true
   }
 }

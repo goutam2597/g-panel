@@ -3,6 +3,58 @@ import { db, getSetting } from '../db/index.js';
 import { config } from '../config.js';
 import { sys } from './index.js';
 import { buildZoneFile, bumpSerial } from '../lib/zonefile.js';
+import { ensurePublicHtml, startSiteServer } from './site-server.js';
+
+export function allocateLocalPort() {
+  const used = new Set();
+  try {
+    for (const r of db.prepare('SELECT local_port FROM domains WHERE local_port IS NOT NULL').all()) {
+      if (r.local_port) used.add(Number(r.local_port));
+    }
+  } catch {}
+  for (let p = 10000; p < 11000; p++) if (!used.has(p)) return p;
+  return 10000;
+}
+
+export async function startLocalSite(domainRow) {
+  ensurePublicHtml(domainRow.domain, domainRow.docroot);
+  const result = await startSiteServer(domainRow.id, domainRow.docroot, domainRow.local_port);
+  return result;
+}
+
+export async function stopLocalSite(domainId) {
+  const { stopSiteServer } = await import('./site-server.js');
+  stopSiteServer(domainId);
+}
+
+/**
+ * Boot-time restore: every domain gets its local server back, and domains
+ * that had a tunnel get a fresh one — quick-tunnel hostnames change on each
+ * start, so tunnel_url is refreshed in the DB as they come up.
+ */
+export async function restoreLocalSites() {
+  let restored = 0;
+  let reconnected = 0;
+  const rows = db.prepare('SELECT * FROM domains').all();
+  for (const d of rows) {
+    if (!d.local_port || !d.docroot) continue;
+    try {
+      ensurePublicHtml(d.domain, d.docroot);
+      await startSiteServer(d.id, d.docroot, d.local_port);
+      restored++;
+    } catch { /* port race — skip */ }
+    if (d.tunnel_url) {
+      try {
+        const st = await sys.cloudflare.siteTunnelStart(d.id, `http://127.0.0.1:${d.local_port}`);
+        if (st.url) {
+          db.prepare('UPDATE domains SET tunnel_url = ?, tunnel_status = ? WHERE id = ?').run(st.url, st.status, d.id);
+          reconnected++;
+        }
+      } catch { /* cloudflared missing or offline — sites stay local-only */ }
+    }
+  }
+  return { restored, reconnected };
+}
 
 /**
  * Site provisioning orchestration: keeps service drivers dumb and centralizes
@@ -37,7 +89,7 @@ export async function deprovisionUserEnvironment(user) {
  * DNS zone is created by the caller via createDnsZoneForDomain() after the
  * domain row exists — keeps this function idempotent on vhost-only edits.
  */
-export async function provisionDomain({ user, domain, type, phpVersion, forceHttps, proxyTarget }) {
+export async function provisionDomain({ user, domain, type, phpVersion, forceHttps, proxyTarget, localPort }) {
   await ensureLinuxUser(user);
 
   if (type === 'php') {
@@ -46,12 +98,21 @@ export async function provisionDomain({ user, domain, type, phpVersion, forceHtt
     if (target) await sys.php.writePool(user.username, target, config.domainsDir(user.username));
   }
 
-  await sys.nginx.writeVhost({
-    domain, user: user.username, type,
-    docroot: config.webPublic(user.username, domain),
-    phpVersion, forceHttps: Boolean(forceHttps), proxyTarget: proxyTarget || null,
-    hasCert: false
-  });
+  const docroot = config.webPublic(user.username, domain);
+  ensurePublicHtml(domain, docroot);
+  try {
+    await sys.nginx.writeVhost({
+      domain, user: user.username, type,
+      docroot,
+      phpVersion, forceHttps: Boolean(forceHttps), proxyTarget: proxyTarget || null,
+      hasCert: false,
+      listenPort: localPort || undefined
+    });
+  } catch (e) {
+    // nginx-for-Windows may be absent locally — the per-domain static server
+    // (started by the caller) still serves public_html on the local port.
+    console.warn(`[gpanel] nginx vhost skipped for ${domain}: ${e.message}`);
+  }
 
   await ensurePublicHtmlLink(user.username, domain);
   return true;

@@ -86,6 +86,20 @@ export default function Websites() {
               render: (d) => d.dns_zone ? <Badge kind="info">hosted</Badge> : <span className="muted">external</span>
             },
             {
+              key: 'local', label: 'Local URL',
+              render: (d) => d.local_port
+                ? <a className="mono" style={{ fontSize: 12 }} href={`http://127.0.0.1:${d.local_port}`} target="_blank" rel="noreferrer">127.0.0.1:{d.local_port}</a>
+                : <span className="muted">created before local ports</span>
+            },
+            {
+              key: 'tunnel', label: 'Public (tunnel)',
+              render: (d) => d.tunnel_url
+                ? <a className="mono" style={{ fontSize: 12 }} href={d.tunnel_url} target="_blank" rel="noreferrer">{d.tunnel_url.replace('https://', '')}</a>
+                : d.tunnel_status === 'error'
+                  ? <Badge kind="warn" dot>tunnel error</Badge>
+                  : <span className="muted">—</span>
+            },
+            {
               key: 'created', label: 'Added', num: true, render: (d) => <span className="muted" style={{ fontSize: 12 }}>{fmtDateShort(d.created_at)}</span>
             },
             {
@@ -108,7 +122,18 @@ export default function Websites() {
         <AddDomainModal
           data={data}
           onClose={() => setShowAdd(false)}
-          onDone={async () => { setShowAdd(false); toast.ok('Domain created — vhost, docroot and DNS zone provisioned'); await load(); }}
+          onDone={async (res) => {
+            setShowAdd(false);
+            if (res?.tunnel?.url) {
+              toast.ok('Site is live — opening its public URL…');
+            } else {
+              toast.ok('Domain created — public_html ready (tunnel unavailable, local URL open)');
+            }
+            await load();
+            // open the site automatically: public tunnel URL, local URL as fallback
+            const url = res?.tunnel?.url || res?.local_url;
+            if (url) window.open(url, '_blank', 'noopener');
+          }}
         />
       )}
 
@@ -188,9 +213,18 @@ export default function Websites() {
 
 function ConnectionModal({ info, onClose, onRecheck }) {
   const [checking, setChecking] = useState(false);
+  const [tunnelBusy, setTunnelBusy] = useState(false);
+  const [tunnelErr, setTunnelErr] = useState(null);
   const recheck = async () => {
     setChecking(true);
     try { await onRecheck(); } finally { setChecking(false); }
+  };
+  const tunnelAction = async (kind) => {
+    setTunnelBusy(true); setTunnelErr(null);
+    try {
+      const res = await api.post(`/domains/${info.id}/tunnel/${kind}`);
+      onRecheck();
+    } catch (e) { setTunnelErr(e.message); } finally { setTunnelBusy(false); }
   };
   const registrar = info.dns_hosted;
   return (
@@ -200,6 +234,34 @@ function ConnectionModal({ info, onClose, onRecheck }) {
         <button className="btn primary" onClick={onClose}>Done</button>
       </>}>
       <div style={{ display: 'grid', gap: 14 }}>
+        <div>
+          <div className="label" style={{ marginBottom: 8 }}>Local PC (no DNS needed)</div>
+          <div className="card" style={{ padding: 12, display: 'grid', gap: 8 }}>
+            <div style={{ fontSize: 12.5 }}>
+              <b>Files:</b> <span className="mono">{info.local?.docroot || '—'}</span>
+            </div>
+            <div style={{ fontSize: 12.5 }}>
+              <b>On this PC:</b>{' '}
+              {info.local?.url
+                ? <a className="mono" href={info.local.url} target="_blank" rel="noreferrer">{info.local.url}</a>
+                : <span className="muted">not available (site created before local ports)</span>}
+            </div>
+            <div style={{ fontSize: 12.5 }}>
+              <b>Public URL (Cloudflare tunnel):</b>{' '}
+              {info.tunnel
+                ? <a className="mono" href={info.tunnel} target="_blank" rel="noreferrer">{info.tunnel}</a>
+                : <span className="muted">no tunnel yet</span>}
+              {info.tunnel_status === 'running' && <Badge kind="ok" dot>running</Badge>}
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              {!info.tunnel
+                ? <button className="btn primary" disabled={tunnelBusy} onClick={() => tunnelAction('start')}>{tunnelBusy ? 'Starting tunnel…' : 'Start Cloudflare tunnel'}</button>
+                : <button className="btn" disabled={tunnelBusy} onClick={() => tunnelAction('stop')}>{tunnelBusy ? 'Stopping…' : 'Stop tunnel'}</button>}
+              {tunnelErr && <span className="danger-text" style={{ fontSize: 12 }}>{tunnelErr}</span>}
+            </div>
+          </div>
+        </div>
+
         <div className={`callout ${info.delegated ? 'ok' : 'warn'}`}>
           <div style={{ fontSize: 13 }}>
             {info.delegated
@@ -263,7 +325,7 @@ function AddDomainModal({ data, onClose, onDone }) {
   const toast = useToast();
   const [form, setForm] = useState({
     domain: '', type: 'php', php_version: data.phpVersions[0] || '8.3',
-    dns_enabled: true, force_https: true, proxy_target: ''
+    dns_enabled: true, force_https: true, proxy_target: '', tunnel: true
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -273,8 +335,8 @@ function AddDomainModal({ data, onClose, onDone }) {
     e.preventDefault();
     setBusy(true); setError(null);
     try {
-      await api.post('/domains', form);
-      onDone();
+      const res = await api.post('/domains', form);
+      onDone(res);
     } catch (err) { setError(err.message); } finally { setBusy(false); }
   };
 
@@ -285,7 +347,7 @@ function AddDomainModal({ data, onClose, onDone }) {
         <button className="btn primary" onClick={submit} disabled={busy || !form.domain}>{busy ? 'Provisioning…' : 'Create site'}</button>
       </>}>
       <form onSubmit={submit}>
-        <Field label="Domain name" hint="Point its DNS A record at this server (or host the zone here).">
+        <Field label="Domain name" hint="On this PC a public_html folder, local URL and Cloudflare tunnel URL are created automatically — DNS delegation is optional.">
           <input className="input" autoFocus placeholder="example.com" value={form.domain}
             onChange={(e) => set('domain', e.target.value)} />
         </Field>
@@ -319,6 +381,10 @@ function AddDomainModal({ data, onClose, onDone }) {
         <label className="checkbox-row">
           <input type="checkbox" checked={form.force_https} onChange={(e) => set('force_https', e.target.checked)} />
           <span>Force HTTPS once a certificate is issued</span>
+        </label>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={form.tunnel} onChange={(e) => set('tunnel', e.target.checked)} />
+          <span>Start a Cloudflare tunnel for this site (gives a public https URL)</span>
         </label>
         {error && <div className="callout warn" style={{ marginTop: 12 }}>{error}</div>}
       </form>

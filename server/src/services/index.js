@@ -16,28 +16,36 @@ if (DEV) {
   // and independent of the hosted services.
   drivers.cloudflare = (await import('./real/cloudflare.js')).default;
 
-  // Dev upgrade: if this machine has a real local MySQL (Laragon/XAMPP/PATH),
-  // use the REAL database driver so panel-created users/databases genuinely
-  // exist — and the original phpMyAdmin SSO works end-to-end against them.
+  // Real file driver in dev too — the file manager must touch the disk like
+  // production (the sim's in-memory VFS is why Files looked like a dummy and
+  // showed "No such directory: /" on Windows).
+  drivers.files = (await import('./real/files.js')).default;
+  if (IS_WIN) {
+    try {
+      const winNginx = (await import('./win/nginx.js')).default;
+      drivers.nginx = winNginx;
+    } catch { /* fallback static server still serves sites */ }
+    try {
+      const winSystem = (await import('./win/system.js')).default;
+      drivers.system = winSystem;
+    } catch {}
+  }
+
+  // Dev databases: the panel owns its own MySQL on a private port (:3307) —
+  // never Laragon's :3306. Simulator stays until the panel MySQL is up.
   try {
-    const { findMysqlClient } = await import('../lib/localstack.js');
+    const { ensurePanelMySQL, panelDbConfig, MYSQL_PORT } = await import('./win/mysql.js');
     const { configureDb } = await import('./real/db.js');
-    const client = await findMysqlClient();
-    if (client) {
-      configureDb({
-        bin: client.bin,
-        dumpBin: client.dumpBin,
-        baseArgs: ['-h', process.env.GPANEL_MYSQL_HOST || '127.0.0.1', '-P', process.env.GPANEL_MYSQL_PORT || '3306', '-uroot']
-      });
-      const realDb = (await import('./real/db.js')).default;
-      const version = await realDb.serverVersion();
-      if (version) {
-        drivers.db = realDb;
-        console.log(`[gpanel dev] using real local MySQL ${version} (${client.bin})`);
-      }
+    await ensurePanelMySQL();
+    configureDb(panelDbConfig());
+    const realDb = (await import('./real/db.js')).default;
+    const version = await realDb.serverVersion();
+    if (version) {
+      drivers.db = realDb;
+      console.log(`[gpanel dev] panel MySQL ${version} on :${MYSQL_PORT} (own server, not Laragon)`);
     }
   } catch (e) {
-    console.log(`[gpanel dev] local MySQL not used (${e.message?.slice(0, 120)}) — database driver stays simulated`);
+    console.log(`[gpanel dev] panel MySQL not started (${e.message?.slice(0, 160)}) — database driver stays simulated`);
   }
 } else if (IS_WIN) {
   const [
@@ -81,18 +89,18 @@ if (DEV) {
     cloudflare: (await import('./real/cloudflare.js')).default
   };
 
-  // real local MySQL (Laragon/XAMPP/MySQL installer) — the database driver
-  // is genuinely functional on Windows from the first boot.
+  // Panel-owned MySQL (:3307) — started automatically so databases are real
+  // from the first boot, without borrowing Laragon's :3306 data server.
   try {
-    const { findMysqlClient } = await import('../lib/localstack.js');
+    const { ensurePanelMySQL, panelDbConfig, MYSQL_PORT } = await import('./win/mysql.js');
     const { configureDb } = await import('./real/db.js');
-    const client = await findMysqlClient();
-    if (client) {
-      configureDb({ bin: client.bin, dumpBin: client.dumpBin, baseArgs: ['-h', '127.0.0.1', '-P', '3306', '-uroot'] });
-      const v = await drivers.db.serverVersion();
-      if (v) console.log(`[gpanel] local MySQL ${v} detected (${client.bin})`);
-    }
-  } catch { /* user can set GPANEL_MYSQL_HOST later */ }
+    await ensurePanelMySQL();
+    configureDb(panelDbConfig());
+    const v = await drivers.db.serverVersion();
+    if (v) console.log(`[gpanel] panel MySQL ${v} on :${MYSQL_PORT}`);
+  } catch (e) {
+    console.log(`[gpanel] panel MySQL not started (${e.message?.slice(0, 160)})`);
+  }
 } else {
   const [system, nginx, php, dns, mail, ftp, db, pg, nodeapps, dnsthirdparty, ssl, cron, files, ssh, firewall, backup, cloudflare] = await Promise.all([
     import('./real/system.js'),

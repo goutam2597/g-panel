@@ -203,6 +203,10 @@ export function migrate() {
   // lightweight column migrations for databases created before v1.1
   addColumnIfMissing('databases', 'engine', "TEXT NOT NULL DEFAULT 'mysql'");
   addColumnIfMissing('db_users', 'engine', "TEXT NOT NULL DEFAULT 'mysql'");
+  // local/dev per-domain serving: dedicated loopback port + Cloudflare tunnel
+  addColumnIfMissing('domains', 'local_port', 'INTEGER');
+  addColumnIfMissing('domains', 'tunnel_url', 'TEXT');
+  addColumnIfMissing('domains', 'tunnel_status', "TEXT NOT NULL DEFAULT 'none'");
 }
 
 function addColumnIfMissing(table, col, def) {

@@ -105,13 +105,33 @@ export default {
 
   async services() {
     const stack = config.stackDir;
-    const [nginx, phpCgi, mysql] = await Promise.all([portOpen(config.webPort), portOpen(9100), portOpen(3306)]);
-    const cloudflared = fs.existsSync(path.join(stack, 'cloudflared.exe'));
+    const nginxInstalled = fs.existsSync(path.join(stack, 'nginx', 'nginx.exe'));
+
+    // Probe what this install actually runs — not hard-coded defaults:
+    //  - web: nginx on :80 (real install) or the built-in per-site servers
+    //  - mysql: the PANEL's own MySQL (private port), never Laragon's :3306
+    //  - cloudflared: any live tunnel (panel-wide or per-site)
+    let mysqlPort = 3307;
+    try { const { MYSQL_PORT } = await import('./mysql.js'); mysqlPort = Number(MYSQL_PORT); } catch {}
+    const [nginxUp, phpCgi, mysqlUp] = await Promise.all([portOpen(config.webPort), portOpen(9100), portOpen(mysqlPort)]);
+
+    let webRow;
+    if (nginxInstalled) {
+      webRow = { name: 'nginx', label: SERVICE_LABELS.nginx, active: nginxUp, enabled: true, state: nginxUp ? 'active' : 'stopped' };
+    } else {
+      const { anySiteServerRunning } = await import('../site-server.js');
+      const builtinUp = anySiteServerRunning();
+      webRow = { name: 'web', label: 'Web server (built-in)', active: builtinUp, enabled: true, state: builtinUp ? 'active' : 'stopped' };
+    }
+
+    let tunnelUp = false;
+    try { const cf = (await import('../real/cloudflare.js')).default; tunnelUp = cf.anyRunning(); } catch {}
+
     return [
-      { name: 'nginx', label: SERVICE_LABELS.nginx, active: nginx, enabled: fs.existsSync(path.join(stack, 'nginx', 'nginx.exe')), state: nginx ? 'active' : 'stopped' },
+      webRow,
       { name: 'php-cgi', label: SERVICE_LABELS['php-cgi'], active: phpCgi, enabled: true, state: phpCgi ? 'active' : 'stopped' },
-      { name: 'mysql', label: SERVICE_LABELS.mysql, active: mysql, enabled: true, state: mysql ? 'active' : 'stopped' },
-      { name: 'cloudflared', label: SERVICE_LABELS.cloudflared, active: false, enabled: cloudflared, state: cloudflared ? 'installed' : 'not installed' }
+      { name: 'mysql', label: SERVICE_LABELS.mysql, active: mysqlUp, enabled: true, state: mysqlUp ? 'active' : 'stopped' },
+      { name: 'cloudflared', label: SERVICE_LABELS.cloudflared, active: tunnelUp, enabled: true, state: tunnelUp ? 'active' : 'installed' }
     ];
   },
 
@@ -130,6 +150,16 @@ export default {
     if (name === 'php-cgi') {
       const { default: php } = await import('./php.js');
       await php.ensurePools();
+      return true;
+    }
+    if (name === 'mysql') {
+      const { ensurePanelMySQL } = await import('./mysql.js');
+      await ensurePanelMySQL();
+      return true;
+    }
+    if (name === 'web' || name === 'cloudflared') {
+      // built-in site servers and per-site tunnels self-manage — starting is
+      // a no-op; they come up with the panel (restoreLocalSites) or per request
       return true;
     }
     throw new Error(`${name} is managed outside the panel on Windows`);

@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { config, DEV } from './config.js';
+import { config, DEV, IS_WIN } from './config.js';
 import { migrate, db } from './db/index.js';
 import { seed } from './db/seed.js';
 import { getSession, originCheck, csrfCheck, requireAuth, requireAdmin } from './auth/index.js';
@@ -92,6 +92,18 @@ terminalWs.attach(app);
 migrate();
 await seed();
 startScheduler();
+
+// Bring every site's local server (and its tunnel, if it had one) back up
+// after a panel restart — quick-tunnel URLs refresh automatically.
+if (IS_WIN || DEV) {
+  import('./services/sites.js').then(({ restoreLocalSites }) => restoreLocalSites())
+    .then((r) => {
+      if (r && (r.restored || r.reconnected)) {
+        console.log(`[gpanel] local sites restored: ${r.restored} served, ${r.reconnected} tunnel(s) reconnected`);
+      }
+    })
+    .catch(() => {});
+}
 
 const address = await app.listen({ port: config.port, host: config.host });
 console.log(`G-Panel ${config.version}${DEV ? ' [DEV MODE — simulated services]' : ''}`);

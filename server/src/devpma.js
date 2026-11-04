@@ -63,6 +63,15 @@ export async function startDevPma() {
   const source = `official ${pmaVersion} (panel-owned copy)`;
 
   // ---- signon-only config + one-time-token bridge (same as production) ----
+  // The panel's own MySQL runs on its private port (3307) — phpMyAdmin must
+  // hit THAT server, not whatever happens to listen on 3306 (Laragon).
+  let mysqlPort = process.env.GPANEL_MYSQL_PORT || '';
+  if (!mysqlPort && (config.dev || config.isWin)) {
+    try {
+      const { MYSQL_PORT } = await import('./services/win/mysql.js');
+      mysqlPort = String(MYSQL_PORT);
+    } catch { /* linux prod: default port */ }
+  }
   const mysqlHost = process.env.GPANEL_MYSQL_HOST || '127.0.0.1';
   fs.writeFileSync(path.join(workDir, 'config.inc.php'), `<?php
 $cfg['Servers'] = array();
@@ -72,6 +81,7 @@ $cfg['Servers'][$i]['SignonSession']  = 'GPanelSignon';
 $cfg['Servers'][$i]['SignonURL']      = 'gpanel-signon.php';
 $cfg['Servers'][$i]['LogoutURL']      = 'gpanel-signon.php';
 $cfg['Servers'][$i]['host']           = '${mysqlHost}';
+$cfg['Servers'][$i]['port']           = '${mysqlPort}';
 $cfg['Servers'][$i]['AllowNoPassword'] = false;
 $cfg['ServerDefault'] = 1;
 `);
@@ -79,11 +89,14 @@ $cfg['ServerDefault'] = 1;
   // The bridge exchanges the one-time token over HTTP with the panel, then
   // seeds the GPanelSignon session with the keys phpMyAdmin's signon auth
   // reads (PMA_single_signon_*). Works with any PHP build — no pdo_sqlite.
+  // Without a token: bounce to the panel's Databases page (that's where
+  // working one-click links come from) instead of a dead-end error.
   const panelInternal = `http://127.0.0.1:${config.port}`;
   const devHost = process.env.GPANEL_MYSQL_HOST || '127.0.0.1';
+  const panelUi = `http://127.0.0.1:${config.port}/databases`;
   fs.writeFileSync(path.join(workDir, 'gpanel-signon.php'), `<?php
 $token = $_GET['t'] ?? '';
-if (!preg_match('/^[a-f0-9]{64}$/', $token)) { http_response_code(400); die('Invalid sign-on token.'); }
+if (!preg_match('/^[a-f0-9]{64}$/', $token)) { header('Location: ${panelUi}'); exit; }
 $ctx = stream_context_create(array('http' => array('timeout' => 5)));
 $raw = @file_get_contents('${panelInternal}/api/v1/pma/token?t=' . urlencode($token), false, $ctx);
 if ($raw === false) { http_response_code(502); die('Cannot reach the G-Panel token service — is the panel running?'); }
@@ -95,7 +108,7 @@ session_regenerate_id(true);
 $_SESSION['PMA_single_signon_user'] = $data['mysql_user'];
 $_SESSION['PMA_single_signon_password'] = $data['mysql_pass'];
 $_SESSION['PMA_single_signon_host'] = '${devHost}';
-$_SESSION['PMA_single_signon_port'] = '';
+$_SESSION['PMA_single_signon_port'] = '${mysqlPort}';
 $_SESSION['PMA_single_signon_token'] = bin2hex(random_bytes(16));
 header('Location: index.php');
 `);
@@ -141,9 +154,9 @@ require __DIR__ . '/index.php';
     let up = false;
     for (let i = 0; i < 16; i++) {
       try {
-        const res = await fetch(`http://127.0.0.1:${PMA_PORT}/gpanel-signon.php`, { signal: AbortSignal.timeout(1500) });
-        // 400 'Invalid sign-on token' = PHP + the app itself are working
-        if (res.status === 400) { up = true; break; }
+        const res = await fetch(`http://127.0.0.1:${PMA_PORT}/gpanel-signon.php`, { signal: AbortSignal.timeout(1500), redirect: 'manual' });
+        // 302 (token-less visits bounce to the panel) = PHP + the app work
+        if (res.status === 302 || res.status === 400) { up = true; break; }
       } catch { /* not up yet */ }
       await new Promise((r) => setTimeout(r, 500));
     }

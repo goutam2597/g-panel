@@ -29,6 +29,19 @@ function tarBin() {
 
 export default {
   async list(dir) {
+    if (process.platform === 'win32' && dir === '/') {
+      const out = [];
+      for (let c = 67; c <= 90; c++) {
+        const drv = String.fromCharCode(c) + ':/';
+        if (!fs.existsSync(drv)) continue;
+        const st = await fsp.stat(drv);
+        out.push({ name: String.fromCharCode(c) + ':', type: 'dir', size: 0, mode: (st.mode & 0o777).toString(8).padStart(3, '0'), mtime: st.mtimeMs, owner: 'user' });
+      }
+      return out;
+    }
+    // Windows drive roots ('D:/') are valid readdir targets — do NOT strip
+    // the slash: bare 'd:' means "cwd on that drive" and reads the wrong dir.
+    if (/^[a-z]:$/i.test(dir)) dir = dir + '/';
     const entries = await fsp.readdir(dir, { withFileTypes: true });
     const out = [];
     for (const e of entries) {

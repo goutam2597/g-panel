@@ -18,6 +18,16 @@ let state = {
   logs: []
 };
 
+// Per-domain quick tunnels: one cloudflared child per domain id.
+const siteTunnels = new Map(); // domainId -> { child, url, status, logs[], target }
+
+function siteLog(domainId, line) {
+  const t = siteTunnels.get(domainId);
+  if (!t) return;
+  t.logs.push(`${new Date().toISOString()} ${String(line).trim()}`);
+  if (t.logs.length > 200) t.logs.shift();
+}
+
 const BIN = () => {
   const name = process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared';
   return path.join(config.stackDir || config.dataDir, name);
@@ -154,6 +164,64 @@ export default {
 
   logs() {
     return state.logs.join('\n');
+  },
+
+  // ---- Per-domain quick tunnels (local PC websites) ----
+
+  async siteTunnelStatus(domainId) {
+    const t = siteTunnels.get(domainId);
+    const bin = await this.installedPath();
+    if (!t) return { installed: Boolean(bin), domainId, running: false, status: 'stopped', url: null, target: null };
+    return { installed: Boolean(bin), domainId, running: Boolean(t.child), status: t.status, url: t.url, target: t.target };
+  },
+
+  async siteTunnelStart(domainId, target) {
+    const bin = await this.installedPath();
+    if (!bin) throw new Error('cloudflared is not installed — click Install on the Cloudflare page first');
+    if (!target) throw new Error('Missing local target URL for this site');
+    if (siteTunnels.get(domainId)?.child) throw new Error('Tunnel already running for this site — stop it first');
+    const entry = { child: null, url: null, status: 'starting', logs: [], target };
+    siteTunnels.set(domainId, entry);
+    entry.child = spawn(bin, ['tunnel', '--url', target, '--no-autoupdate'], { stdio: ['ignore', 'pipe', 'pipe'], detached: true, windowsHide: true });
+    entry.child.unref();
+    const onData = (d) => {
+      for (const line of String(d).split('\n')) {
+        siteLog(domainId, line);
+        const m = line.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
+        if (m) { entry.url = m[0]; entry.status = 'running'; }
+      }
+    };
+    entry.child.stdout.on('data', onData);
+    entry.child.stderr.on('data', onData);
+    entry.child.on('exit', (code) => {
+      siteLog(domainId, `tunnel exited (code ${code})`);
+      entry.child = null; entry.status = 'stopped'; entry.url = null;
+    });
+    for (let i = 0; i < 40; i++) {
+      if (entry.url) break;
+      if (!entry.child) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (!entry.url) throw new Error('Tunnel started but no URL was assigned — check the site tunnel logs');
+    return this.siteTunnelStatus(domainId);
+  },
+
+  async siteTunnelStop(domainId) {
+    const t = siteTunnels.get(domainId);
+    if (t?.child) { try { t.child.kill(); } catch {} }
+    if (t) { t.child = null; t.status = 'stopped'; t.url = null; }
+    return this.siteTunnelStatus(domainId);
+  },
+
+  siteTunnelLogs(domainId) {
+    return (siteTunnels.get(domainId)?.logs || []).join('\n');
+  },
+
+  /** True when any tunnel (panel-wide or per-site) has a live child process. */
+  anyRunning() {
+    if (state.child) return true;
+    for (const t of siteTunnels.values()) { if (t.child) return true; }
+    return false;
   },
 
   // ---- Cloudflare DNS (optional, needs an API token in settings) ----

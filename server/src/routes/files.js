@@ -14,7 +14,9 @@ import { config } from '../config.js';
 
 function allowedRoots(request) {
   const s = request.gpanelSession;
-  if (s.role === 'admin' && !s.impersonated_by) return ['/'];
+  if (s.role === 'admin' && !s.impersonated_by) {
+    return ['/'];
+  }
   const user = db.prepare('SELECT username FROM users WHERE id = ?').get(s.user_id);
   // the ~/public_html junction plus the domains tree itself
   return [config.domainsDir(user.username), config.publicHtmlLink(user.username)];
@@ -27,7 +29,45 @@ function resolvePath(request, requested, reply) {
     reply.code(403).send({ error: res.error });
     return null;
   }
-  return res.path;
+  // validatePathSafe lowercases the drive letter ('d:/…') — canonicalize back
+  // to uppercase so the path we return (and the UI echoes) round-trips.
+  let p = res.path.replace(/^([a-z]):/i, (m, c) => c.toUpperCase() + ':');
+  const st = safeStat(p) || safeStat(res.path);
+  if (st) return p;
+  const canon = realDirMatch(p);
+  if (canon) return canon;
+  reply.code(404).send({ error: `No such directory: ${requested}` });
+  return null;
+}
+
+function safeStat(p) {
+  try { return fs.statSync(p); } catch { return null; }
+}
+
+// Walk the path segment by segment, case-insensitively, returning the real
+// casing — Windows is case-insensitive but config paths were built with
+// backslashes and mixed case.
+function realDirMatch(p) {
+  const segs = p.split('/').filter(Boolean);
+  let cur = '';
+  const drive = segs[0] && /^[a-z]:$/i.test(segs[0]) ? segs[0] + '/' : '/';
+  let rest = segs;
+  if (drive !== '/') { cur = drive; rest = segs.slice(1); } else { cur = '/'; rest = segs; }
+  for (const seg of rest) {
+    let entries;
+    try { entries = fs.readdirSync(cur); } catch { return null; }
+    cur = cur.endsWith('/') ? cur + seg : cur + '/' + seg;
+    let info = safeStat(cur);
+    if (!info) {
+      const hit = entries.find((n) => n.toLowerCase() === seg.toLowerCase());
+      if (!hit) return null;
+      cur = cur.slice(0, cur.length - seg.length) + hit;
+      info = safeStat(cur);
+    }
+    if (!info || !info.isDirectory()) return null;
+  }
+  try { if (fs.statSync(cur).isDirectory()) return cur; } catch {}
+  return null;
 }
 
 export default async function (app) {
@@ -40,13 +80,16 @@ export default async function (app) {
     const domains = db.prepare('SELECT domain FROM domains WHERE user_id = ? ORDER BY created_at').all(s.user_id);
     const roots = [];
     // cPanel-style: ~/public_html is the main domain's document root
-    const link = config.publicHtmlLink(user.username);
-    if (fs.existsSync(link)) {
-      roots.push({ label: 'public_html (main site)', path: link });
-    }
+    // Always offer each site's own public_html — the ~/ junction only exists
+    // after the first domain is created and may point at a different site.
     for (const d of domains) {
       roots.push({ label: `${d.domain} (public_html)`, path: config.webPublic(user.username, d.domain) });
     }
+    const link = config.publicHtmlLink(user.username);
+    if (fs.existsSync(link) && !roots.some((r) => r.path === link)) {
+      roots.push({ label: 'public_html (main site)', path: link });
+    }
+    if (!roots.length) roots.push({ label: 'My home', path: config.homeDir(user.username) });
     return { roots };
   });
 
@@ -55,12 +98,23 @@ export default async function (app) {
     if (dir === null) return;
     try {
       const entries = await sys.files.list(dir);
-      const cwd = dir === '/' ? '/' : dir.replace(/\/$/, '');
-      const parent = cwd === '/' ? null : path.dirname(cwd);
+      // Drive roots keep their trailing slash ('D:/') — stripping it would
+      // hand the UI a bare 'D:' which the next request can't validate.
+      const isRoot = dir === '/';
+      const isDriveRoot = /^[a-z]:\/$/i.test(dir);
+      const cwd = isRoot || isDriveRoot ? dir : dir.replace(/\/$/, '');
+      const parent = isRoot ? null : isDriveRoot ? '/' : path.dirname(cwd);
+      // Virtual drive entries from '/': names end with ':' (e.g. 'C:') and
+      // must not be joined into ('/C:') — the client passes entry.path back
+      // into every follow-up request, so it must be an absolute path.
+      const joinPath = (cwd, name) => {
+        if (cwd === '/') return /^[a-z]:$/i.test(name) ? name + '/' : '/' + name;
+        return path.posix.join(cwd, name);
+      };
       return {
         path: cwd,
         parent,
-        entries: entries.map((e) => ({ ...e, path: path.posix.join(cwd, e.name) }))
+        entries: entries.map((e) => ({ ...e, path: joinPath(cwd, e.name) }))
       };
     } catch (e) {
       reply.code(400).send({ error: e.message });

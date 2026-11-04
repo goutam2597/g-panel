@@ -5,3 +5,6 @@ dist/
 .zcode/
 *.log
 .DS_Store
+
+# panel-owned stack (binaries + data)
+stack/

@@ -224,19 +224,38 @@ function PmaLoginModal({ info, onClose }) {
   const toast = useToast();
   const [selected, setSelected] = useState(info.users[0]?.id);
   const [busy, setBusy] = useState(false);
+  const [manualUrl, setManualUrl] = useState(null);
 
   const go = async () => {
-    setBusy(true);
+    setBusy(true); setManualUrl(null);
+    // Try to open the tab inside the click gesture itself — calling
+    // window.open AFTER the async request can be blocked by the browser.
+    // If even that is blocked, fall back to a direct link in the modal
+    // (a user-clicked anchor is never popup-blockable).
+    const win = window.open('', '_blank');
     try {
       const res = await api.post('/databases/pma-login', { db_user_id: selected });
       if (res.phpMissing) {
+        win?.close();
         toast.error(res.reason || 'phpMyAdmin needs PHP — not found on this machine');
         return;
       }
-      window.open(res.url, '_blank');
-      toast.ok('Opening phpMyAdmin — signed in automatically (one-time sign-on)');
-      onClose();
+      if (!res.url) {
+        win?.close();
+        toast.error('Could not create a sign-on link');
+        return;
+      }
+      if (win) {
+        win.location = res.url;
+        toast.ok('Opening phpMyAdmin — signed in automatically (one-time sign-on)');
+        onClose();
+      } else {
+        // Popup blocked: keep this dialog open with a direct link
+        setManualUrl(res.url);
+        toast.ok('Your browser blocked the tab — use the link below');
+      }
     } catch (e) {
+      win?.close();
       toast.error(e.message);
     } finally {
       setBusy(false);
@@ -269,6 +288,14 @@ function PmaLoginModal({ info, onClose }) {
           ))}
         </div>
       </Field>
+      {manualUrl && (
+        <div className="callout warn" style={{ marginTop: 6, display: 'grid', gap: 8 }}>
+          <span>Your browser blocked the automatic tab. This link is single-use and valid for 90 seconds:</span>
+          <a className="btn primary" href={manualUrl} target="_blank" rel="noopener" style={{ textAlign: 'center', textDecoration: 'none' }}>
+            Open phpMyAdmin →
+          </a>
+        </div>
+      )}
       {info.dev && (
         <div className="callout warn" style={{ marginTop: 6 }}>
           Dev mode — this opens the panel's own phpMyAdmin: the official
